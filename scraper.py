@@ -1,22 +1,21 @@
 
 # =============================================================================
-# SCRAPER BENCHMARK COMPETITIVO - GITHUB ACTIONS + GOOGLE SHEETS
+# SCRAPER BENCHMARK COMPETITIVO - CSV AUTOMÁTICO (SIN CREDENCIALES)
 # =============================================================================
 
 import asyncio
 import json
 import os
 import re
+import csv
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
-import gspread
-from google.oauth2.service_account import Credentials
 
 # =============================================================================
-# 1. CONFIGURACIÓN
+# 1. CONFIGURACIÓN - URLs de las 17 tiendas
 # =============================================================================
 
 RETAILERS = {
@@ -39,14 +38,7 @@ RETAILERS = {
     "Newsport": "https://www.newsport.com.ar/",
 }
 
-# Google Sheets config (desde variables de entorno)
-SPREADSHEET_ID = os.environ.get(
-    "SPREADSHEET_ID", "1Yl1pZTU4lY67fvzu5HJoocBNPKc28A5fr72KfzuWL-A"
-)
-SHEET_NAME = os.environ.get("SHEET_NAME", "Benchmark IA")
-
-# Selectores CSS por tipo de dato
-# ⚠️ IMPORTANTE: Ajustar estos selectores inspeccionando el HTML real de cada sitio
+# Selectores CSS para extraer datos de cada sitio
 SELECTORS = {
     "banners": [
         ".slick-slide img",
@@ -138,6 +130,7 @@ class RetailerData:
 # =============================================================================
 
 def extract_text_from_elements(soup, selectors):
+    """Busca elementos en el HTML y extrae su texto."""
     texts = []
     for selector in selectors:
         try:
@@ -151,6 +144,7 @@ def extract_text_from_elements(soup, selectors):
 
 
 def extract_banner_info(soup):
+    """Extrae los textos alternativos de las imágenes de banners."""
     alt_texts = []
     for selector in SELECTORS["banners"]:
         try:
@@ -164,6 +158,7 @@ def extract_banner_info(soup):
 
 
 def extract_shipping_threshold(texts):
+    """Busca el monto de envío gratis en los textos extraídos."""
     patterns = [
         r'\$[\d.,]+',
         r'envío\s*gratis\s*(?:desde|a partir de)?\s*\$?[\d.,]+',
@@ -181,6 +176,7 @@ def extract_shipping_threshold(texts):
 
 
 def detect_newsletter_discount(popup_texts):
+    """Detecta si hay descuento por suscripción a newsletter."""
     patterns = [
         r'(\d+)\s*%\s*(?:off|dto|descuento|de descuento)',
         r'descuento\s*(?:del?)?\s*(\d+)\s*%',
@@ -199,6 +195,8 @@ def detect_newsletter_discount(popup_texts):
 # =============================================================================
 
 async def scrape_retailer(page, nombre, url):
+    """Visita una URL y extrae toda la información."""
+
     data = RetailerData(
         nombre=nombre,
         url=url,
@@ -211,7 +209,7 @@ async def scrape_retailer(page, nombre, url):
         await page.goto(url, wait_until="networkidle", timeout=45000)
         await page.wait_for_timeout(5000)
 
-        # Cerrar cookies/pop-ups iniciales
+        # Cerrar cookies/pop-ups que bloquean el contenido
         for sel in [
             "button:has-text('Aceptar')",
             "button:has-text('Cerrar')",
@@ -226,10 +224,10 @@ async def scrape_retailer(page, nombre, url):
             except Exception:
                 continue
 
-        # Esperar pop-ups de newsletter
+        # Esperar que aparezcan pop-ups de newsletter
         await page.wait_for_timeout(4000)
 
-        # Parsear HTML
+        # Leer el HTML de la página
         html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
 
@@ -242,7 +240,7 @@ async def scrape_retailer(page, nombre, url):
             data.envio_textos + data.promociones + data.banners_alt_texts
         )
 
-        # Pop-ups / Newsletter
+        # Detectar pop-ups y newsletter
         for selector in SELECTORS["popups"]:
             try:
                 for el in soup.select(selector):
@@ -269,6 +267,8 @@ async def scrape_retailer(page, nombre, url):
 
 
 async def run_scraper():
+    """Ejecuta el scraper para las 17 tiendas."""
+
     print("=" * 60)
     print(f"BENCHMARK COMPETITIVO - {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     print("=" * 60)
@@ -302,22 +302,27 @@ async def run_scraper():
 
 
 # =============================================================================
-# 5. FORMATEO → GOOGLE SHEETS (tu formato)
+# 5. GUARDAR RESULTADOS EN CSV
 # =============================================================================
 
-def format_results(results):
+def save_csv(results):
     """
-    Formato solicitado:
-    Fila 1: Encabezado (Meses | Retailer1 | Retailer2 | ...)
-    Fila 2: MES → Promociones principales (bullets)
-    Fila 3: Financiación → Institucional + bancaria (bullets)
-    Fila 4: Envío → Monto umbral
+    SIEMPRE genera el CSV, aunque no haya datos extraídos.
+    Formato: Columnas = Retailers | Filas = Promociones, Financiación, Envío
     """
+
+    print("\n📁 Generando archivos CSV...")
+
+    # Crear carpeta SIEMPRE
+    os.makedirs("resultados", exist_ok=True)
 
     mes = datetime.now().strftime("%B").upper()
+    fecha = datetime.now().strftime("%Y-%m-%d")
+
+    # --- Construir las filas ---
     headers = ["Meses"] + [r.nombre for r in results]
 
-    # Fila promociones
+    # Fila 1: Promociones principales
     row_promos = [mes]
     for r in results:
         promos = []
@@ -326,71 +331,66 @@ def format_results(results):
         for promo in r.promociones[:5]:
             if promo not in r.banners_alt_texts:
                 promos.append(f"- {promo}")
-        row_promos.append("\n".join(promos[:8]) if promos else "No detectado")
+        cell = "\n".join(promos[:8]) if promos else "Sin datos detectados"
+        if r.error:
+            cell = f"ERROR: {r.error[:100]}"
+        row_promos.append(cell)
 
-    # Fila financiación
+    # Fila 2: Financiación
     row_financ = ["Financiación"]
     for r in results:
         financ = [f"- {t}" for t in r.financiacion_textos[:8]]
-        row_financ.append("\n".join(financ) if financ else "No detectado")
+        cell = "\n".join(financ) if financ else "Sin datos detectados"
+        row_financ.append(cell)
 
-    # Fila envío
+    # Fila 3: Envío
     row_envio = ["Envío"]
     for r in results:
         row_envio.append(r.envio_umbral)
 
-    return [headers, row_promos, row_financ, row_envio]
+    # --- Escribir CSV con fecha (historial) ---
+    filename_dated = f"resultados/benchmark_{fecha}.csv"
+    with open(filename_dated, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        writer.writerow(row_promos)
+        writer.writerow(row_financ)
+        writer.writerow(row_envio)
+    print(f"  ✓ CSV historial: {filename_dated}")
+
+    # --- Escribir CSV "último" (se sobreescribe siempre) ---
+    filename_latest = "resultados/benchmark_ultimo.csv"
+    with open(filename_latest, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        writer.writerow(row_promos)
+        writer.writerow(row_financ)
+        writer.writerow(row_envio)
+    print(f"  ✓ CSV último:    {filename_latest}")
+
+    # --- Verificar que los archivos existen ---
+    for fname in [filename_dated, filename_latest]:
+        if os.path.exists(fname):
+            size = os.path.getsize(fname)
+            print(f"  ✓ Verificado: {fname} ({size} bytes)")
+        else:
+            print(f"  ✗ ERROR: {fname} NO se creó")
+
+    return filename_dated
 
 
 # =============================================================================
-# 6. UPLOAD A GOOGLE SHEETS
+# 6. GUARDAR BACKUP COMPLETO EN JSON
 # =============================================================================
 
-def upload_to_sheets(data_rows):
-    """Sube los datos formateados a Google Sheets."""
+def save_json(results):
+    """Guarda todos los datos extraídos en JSON (backup completo)."""
 
-    print("\n📊 Subiendo datos a Google Sheets...")
+    os.makedirs("resultados", exist_ok=True)
 
-    SCOPES = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-
-    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
-    client = gspread.authorize(creds)
-
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
-
-    # Buscar o crear la hoja
-    try:
-        worksheet = spreadsheet.worksheet(SHEET_NAME)
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=SHEET_NAME, rows=10, cols=20)
-
-    # Verificar si ya hay datos del mismo mes (para agregar filas, no sobreescribir)
-    existing = worksheet.get_all_values()
-
-    if len(existing) <= 1:
-        # Hoja vacía o solo encabezado → escribir todo
-        worksheet.clear()
-        worksheet.update("A1", data_rows, value_input_option="RAW")
-        print(f"  ✓ Datos escritos desde cero ({len(data_rows)} filas)")
-    else:
-        # Ya hay datos → agregar las 3 filas de datos debajo (sin repetir header)
-        next_row = len(existing) + 2  # +2 para dejar una fila vacía de separación
-        cell_range = f"A{next_row}"
-        worksheet.update(cell_range, data_rows[1:], value_input_option="RAW")
-        print(f"  ✓ Datos agregados desde fila {next_row}")
-
-    print(f"  ✓ Google Sheets actualizado: {SHEET_NAME}")
-
-
-# =============================================================================
-# 7. BACKUP LOCAL (JSON)
-# =============================================================================
-
-def save_backup(results):
+    fecha = datetime.now().strftime("%Y-%m-%d")
     export = []
+
     for r in results:
         export.append({
             "retailer": r.nombre,
@@ -401,40 +401,65 @@ def save_backup(results):
             "banners": r.banners_alt_texts,
             "financiacion": r.financiacion_textos,
             "envio_umbral": r.envio_umbral,
+            "envio_textos": r.envio_textos,
             "popup": r.popups_detectados,
+            "popup_textos": r.popup_textos,
             "newsletter": r.newsletter_detectado,
             "newsletter_descuento": r.newsletter_descuento,
             "error": r.error,
         })
 
-    with open("benchmark_results.json", "w", encoding="utf-8") as f:
+    filename = f"resultados/benchmark_{fecha}.json"
+    with open(filename, "w", encoding="utf-8") as f:
         json.dump(export, f, ensure_ascii=False, indent=2)
 
-    print("💾 Backup guardado: benchmark_results.json")
+    if os.path.exists(filename):
+        size = os.path.getsize(filename)
+        print(f"  ✓ JSON guardado: {filename} ({size} bytes)")
+    else:
+        print(f"  ✗ ERROR: {filename} NO se creó")
 
 
 # =============================================================================
-# 8. MAIN
+# 7. EJECUCIÓN PRINCIPAL
 # =============================================================================
 
 async def main():
-    # 1. Scraping
+    print("\n🚀 Iniciando benchmark competitivo...\n")
+
+    # 1. Ejecutar scraping de las 17 URLs
     results = await run_scraper()
 
-    # 2. Formatear para Sheets
-    data_rows = format_results(results)
+    # 2. Guardar CSV (formato para Google Sheets)
+    save_csv(results)
 
-    # 3. Subir a Google Sheets
-    try:
-        upload_to_sheets(data_rows)
-    except Exception as e:
-        print(f"⚠️ Error subiendo a Sheets: {e}")
-        print("   Los datos se guardarán solo en backup local")
+    # 3. Guardar JSON (backup completo)
+    save_json(results)
 
-    # 4. Backup local
-    save_backup(results)
+    # 4. Resumen final
+    print("\n" + "=" * 60)
+    print("📊 RESUMEN DE EXTRACCIÓN")
+    print("=" * 60)
+    for r in results:
+        status = "✓" if not r.error else "✗"
+        print(f"  {status} {r.nombre}: "
+              f"{len(r.promociones)} promos, "
+              f"{len(r.banners_alt_texts)} banners, "
+              f"{len(r.financiacion_textos)} financ, "
+              f"envío: {r.envio_umbral}")
+    print("=" * 60)
 
-    print("\n🏁 Benchmark completado exitosamente")
+    # 5. Verificar archivos generados
+    print("\n📁 Archivos en resultados/:")
+    if os.path.exists("resultados"):
+        for f in os.listdir("resultados"):
+            filepath = os.path.join("resultados", f)
+            size = os.path.getsize(filepath)
+            print(f"  → {f} ({size} bytes)")
+    else:
+        print("  ✗ La carpeta resultados/ NO existe")
+
+    print("\n🏁 Benchmark completado")
 
 
 if __name__ == "__main__":
