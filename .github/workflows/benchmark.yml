@@ -7,6 +7,10 @@ on:
     - cron: '0 12 * * 1'
   workflow_dispatch:  # Permite ejecución manual desde GitHub
 
+# Permisos para que pueda escribir en el repositorio
+permissions:
+  contents: write
+
 jobs:
   scraping:
     runs-on: ubuntu-latest
@@ -16,6 +20,8 @@ jobs:
       # 1. Descargar el código del repositorio
       - name: Checkout código
         uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
 
       # 2. Instalar Python
       - name: Setup Python
