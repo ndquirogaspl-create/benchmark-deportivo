@@ -1,0 +1,5 @@
+playwright==1.45.0
+beautifulsoup4==4.12.3
+pandas==2.2.2
+gspread==6.1.2
+google-auth==2.30.0
