@@ -1,13 +1,11 @@
 
 name: Benchmark Deportivo Semanal
 
-# Ejecutar cada lunes a las 9:00 AM Argentina (12:00 UTC)
 on:
   schedule:
     - cron: '0 12 * * 1'
-  workflow_dispatch:  # Permite ejecución manual desde GitHub
+  workflow_dispatch:
 
-# Permisos para que pueda escribir en el repositorio
 permissions:
   contents: write
 
@@ -17,35 +15,45 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # 1. Descargar el código del repositorio
       - name: Checkout código
         uses: actions/checkout@v4
         with:
           token: ${{ github.token }}
 
-      # 2. Instalar Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 3. Instalar las librerías necesarias
       - name: Instalar dependencias
         run: |
           pip install -r requirements.txt
           playwright install chromium
           playwright install-deps
 
-      # 4. Ejecutar el scraper
       - name: Ejecutar benchmark
-        run: python scraper.py
+        run: |
+          mkdir -p resultados
+          python scraper.py
 
-      # 5. Guardar el CSV en el repositorio (commit automático)
+      - name: Verificar resultados
+        run: |
+          echo "Contenido de resultados/:"
+          ls -la resultados/
+          echo ""
+          echo "Archivos CSV encontrados:"
+          find resultados/ -name "*.csv" -o -name "*.json" | head -20
+
       - name: Guardar resultados en el repositorio
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add resultados/
-          git diff --staged --quiet || git commit -m "Benchmark automático - $(date +'%d/%m/%Y')"
-          git push
+          git add resultados/ || true
+          if git diff --staged --quiet; then
+            echo "No hay cambios nuevos para guardar"
+          else
+            git commit -m "Benchmark automático - $(date +'%d/%m/%Y')"
+            git push
+            echo "Resultados guardados exitosamente"
+          fi
 
