@@ -1,0 +1,55 @@
+
+name: Benchmark Deportivo Semanal
+
+# Ejecutar cada lunes a las 9:00 AM Argentina (12:00 UTC)
+on:
+  schedule:
+    - cron: '0 12 * * 1'
+  workflow_dispatch:  # Permite ejecución manual desde GitHub
+
+jobs:
+  scraping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # 1. Checkout del repositorio
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      # 2. Configurar Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. Instalar dependencias
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps
+
+      # 4. Crear archivo de credenciales desde secreto
+      - name: Configurar credenciales Google
+        run: |
+          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+
+      # 5. Ejecutar scraper
+      - name: Ejecutar benchmark
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SHEET_NAME: "Benchmark IA"
+        run: python scraper.py
+
+      # 6. Guardar resultados como artefacto (backup)
+      - name: Guardar resultados
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results-${{ github.run_number }}
+          path: |
+            benchmark_results.json
+            benchmark_sheets.csv
+          retention-days: 90
+
